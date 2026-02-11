@@ -3,7 +3,7 @@
 A browser-based SVG to G-Code converter specifically designed for pen plotting on 3D printers, with optimized support for Bambu Lab P1S and similar machines.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub Pages](https://img.shields.io/badge/demo-live-success)](https://yourusername.github.io/PlotLab/)
+[![GitHub Pages](https://img.shields.io/badge/demo-live-success)](https://bastistmpfl.github.io/PlotLab/)
 
 ## ✨ Features
 
@@ -53,12 +53,12 @@ A browser-based SVG to G-Code converter specifically designed for pen plotting o
 ## 🚀 Quick Start
 
 ### Online (Recommended)
-Visit the live demo: [PlotLab on GitHub Pages](https://yourusername.github.io/PlotLab/)
+Visit the live demo: [PlotLab on GitHub Pages](https://bastistmpfl.github.io/PlotLab/)
 
 ### Local Development
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/PlotLab.git
+   git clone https://github.com/bastistmpfl/PlotLab.git
    cd PlotLab
    ```
 
@@ -248,8 +248,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📧 Contact & Support
 
-- 🐛 **Issues**: [GitHub Issues](https://github.com/yourusername/PlotLab/issues)
-- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/yourusername/PlotLab/discussions)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/bastistmpfl/PlotLab/issues)
+- 💡 **Feature Requests**: [GitHub Discussions](https://github.com/bastistmpfl/PlotLab/discussions)
 
 ---
 
