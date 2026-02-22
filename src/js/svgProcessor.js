@@ -153,117 +153,11 @@ class SVGProcessor {
             const strokes = [];
             const polygons = [];
             
-            // Process all drawable elements
-            const elements = svg.querySelectorAll('path, line, polyline, polygon, circle, ellipse, rect');
+            // Expand <use> elements and clone <defs>
+            SVGProcessor._expandUseElements(svg);
             
-            for (const element of elements) {
-                const fill = (element.getAttribute('fill') || 'none').toLowerCase();
-                const tagName = element.tagName.toLowerCase();
-                
-                try {
-                    let polylines = [];
-                    
-                    switch (tagName) {
-                        case 'path': {
-                            const d = element.getAttribute('d');
-                            polylines = SVGProcessor._samplePath(d, samplesPerUnit);
-                            break;
-                        }
-                        case 'line': {
-                            const x1 = parseFloat(element.getAttribute('x1')) || 0;
-                            const y1 = parseFloat(element.getAttribute('y1')) || 0;
-                            const x2 = parseFloat(element.getAttribute('x2')) || 0;
-                            const y2 = parseFloat(element.getAttribute('y2')) || 0;
-                            polylines = [[[x1, y1], [x2, y2]]];
-                            break;
-                        }
-                        case 'polyline':
-                        case 'polygon': {
-                            const points = element.getAttribute('points');
-                            if (points) {
-                                const coords = points.trim().split(/[\s,]+/).map(parseFloat);
-                                const result = [];
-                                for (let i = 0; i < coords.length; i += 2) {
-                                    result.push([coords[i], coords[i + 1]]);
-                                }
-                                if (result.length >= 2) {
-                                    polylines = [result];
-                                }
-                            }
-                            break;
-                        }
-                        case 'circle': {
-                            const cx = parseFloat(element.getAttribute('cx')) || 0;
-                            const cy = parseFloat(element.getAttribute('cy')) || 0;
-                            const r = parseFloat(element.getAttribute('r')) || 0;
-                            const points = [];
-                            const segments = Math.max(SVGProcessor.ARC_MIN_SEGMENTS, 
-                                Math.ceil(r * samplesPerUnit * 2 * Math.PI / SVGProcessor.ARC_MIN_SEGMENTS));
-                            for (let i = 0; i <= segments; i++) {
-                                const angle = (i / segments) * 2 * Math.PI;
-                                points.push([
-                                    cx + r * Math.cos(angle),
-                                    cy + r * Math.sin(angle)
-                                ]);
-                            }
-                            polylines = [points];
-                            break;
-                        }
-                        case 'ellipse': {
-                            const cx = parseFloat(element.getAttribute('cx')) || 0;
-                            const cy = parseFloat(element.getAttribute('cy')) || 0;
-                            const rx = parseFloat(element.getAttribute('rx')) || 0;
-                            const ry = parseFloat(element.getAttribute('ry')) || 0;
-                            const points = [];
-                            const segments = Math.max(SVGProcessor.ARC_MIN_SEGMENTS, 
-                                Math.ceil(Math.max(rx, ry) * samplesPerUnit * 2 * Math.PI / SVGProcessor.ARC_MIN_SEGMENTS));
-                            for (let i = 0; i <= segments; i++) {
-                                const angle = (i / segments) * 2 * Math.PI;
-                                points.push([
-                                    cx + rx * Math.cos(angle),
-                                    cy + ry * Math.sin(angle)
-                                ]);
-                            }
-                            polylines = [points];
-                            break;
-                        }
-                        case 'rect': {
-                            const x = parseFloat(element.getAttribute('x')) || 0;
-                            const y = parseFloat(element.getAttribute('y')) || 0;
-                            const w = parseFloat(element.getAttribute('width')) || 0;
-                            const h = parseFloat(element.getAttribute('height')) || 0;
-                            polylines = [[[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]]];
-                            break;
-                        }
-                    }
-                    
-                    // Apply SVG transforms
-                    const matrix = SVGProcessor._getTransformMatrix(element);
-                    polylines = polylines.map(pl => SVGProcessor._applyTransform(pl, matrix));
-                    
-                    // Normalize coordinates relative to viewBox
-                    polylines = polylines.map(pl => pl.map(([x, y]) => [x - vx, y - vy]));
-                    
-                    // Apply Y-flip if requested
-                    if (flipY) {
-                        polylines = polylines.map(pl => pl.map(([x, y]) => [x, vh - y]));
-                    }
-                    
-                    // Sort into strokes or polygons based on fill
-                    for (const polyline of polylines) {
-                        if (polyline.length >= 2) {
-                            if (fill === 'none' || !fill) {
-                                strokes.push(polyline);
-                            } else if (polyline.length >= 3) {
-                                polygons.push(polyline);
-                            }
-                        }
-                    }
-                    
-                } catch (error) {
-                    console.warn(`Failed to parse ${tagName} element:`, error);
-                }
-            }
+            // Process all drawable elements recursively (including nested groups)
+            SVGProcessor._processElements(svg, strokes, polygons, flipY, vx, vy, vh, samplesPerUnit);
             
             // Merge continuous strokes
             const mergedStrokes = SVGProcessor._mergeContinuousStrokes(strokes);
@@ -288,6 +182,351 @@ class SVGProcessor {
         }
     }
 
+    /**
+     * Expand <use> elements by cloning referenced elements
+     * @private
+     * @param {SVGSVGElement} svg - SVG root element
+     */
+    static _expandUseElements(svg) {
+        const useElements = svg.querySelectorAll('use');
+        
+        for (const useEl of useElements) {
+            try {
+                const href = useEl.getAttribute('href') || useEl.getAttribute('xlink:href');
+                if (!href) continue;
+                
+                const refId = href.replace('#', '');
+                const referenced = svg.querySelector(`#${CSS.escape(refId)}`);
+                
+                if (!referenced) continue;
+                
+                // Clone the referenced element
+                const clone = referenced.cloneNode(true);
+                
+                // Apply use element's transform and position
+                const x = parseFloat(useEl.getAttribute('x') || 0);
+                const y = parseFloat(useEl.getAttribute('y') || 0);
+                const transform = useEl.getAttribute('transform') || '';
+                
+                let newTransform = transform;
+                if (x !== 0 || y !== 0) {
+                    newTransform = `translate(${x},${y}) ${transform}`.trim();
+                }
+                
+                if (newTransform) {
+                    const existingTransform = clone.getAttribute('transform') || '';
+                    clone.setAttribute('transform', `${newTransform} ${existingTransform}`.trim());
+                }
+                
+                // Copy visibility/display attributes
+                ['visibility', 'display', 'fill', 'stroke', 'opacity'].forEach(attr => {
+                    if (useEl.hasAttribute(attr) && !clone.hasAttribute(attr)) {
+                        clone.setAttribute(attr, useEl.getAttribute(attr));
+                    }
+                });
+                
+                // Insert clone before use element
+                useEl.parentNode.insertBefore(clone, useEl);
+            } catch (error) {
+                console.warn('Failed to expand <use> element:', error);
+            }
+        }
+    }
+
+    /**
+     * Recursively process SVG elements including groups
+     * @private
+     * @param {Element} parent - Parent element to process
+     * @param {Array} strokes - Array to collect stroke polylines
+     * @param {Array} polygons - Array to collect filled polygon polylines
+     * @param {boolean} flipY - Whether to flip Y axis
+     * @param {number} vx - ViewBox x offset
+     * @param {number} vy - ViewBox y offset
+     * @param {number} vh - ViewBox height
+     * @param {number} samplesPerUnit - Sampling density
+     */
+    static _processElements(parent, strokes, polygons, flipY, vx, vy, vh, samplesPerUnit) {
+        const children = parent.children;
+        
+        for (const element of children) {
+            try {
+                // Check visibility
+                if (!SVGProcessor._isElementVisible(element)) {
+                    continue;
+                }
+                
+                const tagName = element.tagName.toLowerCase();
+                
+                // Process groups recursively
+                if (tagName === 'g' || tagName === 'svg') {
+                    SVGProcessor._processElements(element, strokes, polygons, flipY, vx, vy, vh, samplesPerUnit);
+                    continue;
+                }
+                
+                // Skip non-drawable elements
+                if (!['path', 'line', 'polyline', 'polygon', 'circle', 'ellipse', 'rect'].includes(tagName)) {
+                    continue;
+                }
+                
+                // Process drawable element
+                SVGProcessor._processDrawableElement(
+                    element, tagName, strokes, polygons, flipY, vx, vy, vh, samplesPerUnit
+                );
+                
+            } catch (error) {
+                console.warn(`Failed to process element ${element.tagName}:`, error);
+            }
+        }
+    }
+
+    /**
+     * Check if element is visible
+     * @private
+     * @param {Element} element - Element to check
+     * @returns {boolean} True if visible
+     */
+    static _isElementVisible(element) {
+        // Check display attribute
+        const display = element.getAttribute('display');
+        if (display === 'none') return false;
+        
+        // Check visibility attribute
+        const visibility = element.getAttribute('visibility');
+        if (visibility === 'hidden' || visibility === 'collapse') return false;
+        
+        // Check opacity
+        const opacity = element.getAttribute('opacity');
+        if (opacity !== null && parseFloat(opacity) === 0) return false;
+        
+        return true;
+    }
+
+    /**
+     * Process a single drawable element
+     * @private
+     */
+    static _processDrawableElement(element, tagName, strokes, polygons, flipY, vx, vy, vh, samplesPerUnit) {
+        // Get fill attribute (check both direct attribute and computed style)
+        let fill = (element.getAttribute('fill') || '').toLowerCase();
+        if (!fill || fill === '') {
+            // Check for inherited fill from parent groups or CSS
+            const computedFill = SVGProcessor._getComputedFill(element);
+            fill = computedFill || 'none';
+        }
+        
+        let polylines = [];
+        
+        // Extract geometry based on element type
+        switch (tagName) {
+            case 'path': {
+                const d = element.getAttribute('d');
+                if (d && d.trim()) {
+                    polylines = SVGProcessor._samplePath(d, samplesPerUnit);
+                }
+                break;
+            }
+            case 'line': {
+                const x1 = parseFloat(element.getAttribute('x1')) || 0;
+                const y1 = parseFloat(element.getAttribute('y1')) || 0;
+                const x2 = parseFloat(element.getAttribute('x2')) || 0;
+                const y2 = parseFloat(element.getAttribute('y2')) || 0;
+                polylines = [[[x1, y1], [x2, y2]]];
+                break;
+            }
+            case 'polyline':
+            case 'polygon': {
+                const points = element.getAttribute('points');
+                if (points) {
+                    const coords = points.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+                    const result = [];
+                    for (let i = 0; i < coords.length - 1; i += 2) {
+                        result.push([coords[i], coords[i + 1]]);
+                    }
+                    if (result.length >= 2) {
+                        polylines = [result];
+                    }
+                }
+                break;
+            }
+            case 'circle': {
+                const cx = parseFloat(element.getAttribute('cx')) || 0;
+                const cy = parseFloat(element.getAttribute('cy')) || 0;
+                const r = parseFloat(element.getAttribute('r')) || 0;
+                if (r > 0) {
+                    const points = [];
+                    const segments = Math.max(SVGProcessor.ARC_MIN_SEGMENTS, 
+                        Math.ceil(r * samplesPerUnit * 2 * Math.PI / SVGProcessor.ARC_MIN_SEGMENTS));
+                    for (let i = 0; i <= segments; i++) {
+                        const angle = (i / segments) * 2 * Math.PI;
+                        points.push([
+                            cx + r * Math.cos(angle),
+                            cy + r * Math.sin(angle)
+                        ]);
+                    }
+                    polylines = [points];
+                }
+                break;
+            }
+            case 'ellipse': {
+                const cx = parseFloat(element.getAttribute('cx')) || 0;
+                const cy = parseFloat(element.getAttribute('cy')) || 0;
+                const rx = parseFloat(element.getAttribute('rx')) || 0;
+                const ry = parseFloat(element.getAttribute('ry')) || 0;
+                if (rx > 0 && ry > 0) {
+                    const points = [];
+                    const segments = Math.max(SVGProcessor.ARC_MIN_SEGMENTS, 
+                        Math.ceil(Math.max(rx, ry) * samplesPerUnit * 2 * Math.PI / SVGProcessor.ARC_MIN_SEGMENTS));
+                    for (let i = 0; i <= segments; i++) {
+                        const angle = (i / segments) * 2 * Math.PI;
+                        points.push([
+                            cx + rx * Math.cos(angle),
+                            cy + ry * Math.sin(angle)
+                        ]);
+                    }
+                    polylines = [points];
+                }
+                break;
+            }
+            case 'rect': {
+                const x = parseFloat(element.getAttribute('x')) || 0;
+                const y = parseFloat(element.getAttribute('y')) || 0;
+                const w = parseFloat(element.getAttribute('width')) || 0;
+                const h = parseFloat(element.getAttribute('height')) || 0;
+                if (w > 0 && h > 0) {
+                    // Handle rounded corners
+                    const rx = Math.min(parseFloat(element.getAttribute('rx')) || 0, w / 2);
+                    const ry = Math.min(parseFloat(element.getAttribute('ry')) || rx || 0, h / 2);
+                    
+                    if (rx > 0 || ry > 0) {
+                        // Create rounded rectangle
+                        polylines = [SVGProcessor._createRoundedRect(x, y, w, h, rx, ry, samplesPerUnit)];
+                    } else {
+                        polylines = [[[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]]];
+                    }
+                }
+                break;
+            }
+        }
+        
+        // Apply transforms
+        const matrix = SVGProcessor._getTransformMatrix(element);
+        polylines = polylines.map(pl => SVGProcessor._applyTransform(pl, matrix));
+        
+        // Normalize coordinates relative to viewBox
+        polylines = polylines.map(pl => pl.map(([x, y]) => [x - vx, y - vy]));
+        
+        // Apply Y-flip if requested
+        if (flipY) {
+            polylines = polylines.map(pl => pl.map(([x, y]) => [x, vh - y]));
+        }
+        
+        // Sort into strokes or polygons based on fill
+        for (const polyline of polylines) {
+            if (polyline.length >= 2) {
+                if (fill === 'none' || !fill) {
+                    strokes.push(polyline);
+                } else if (polyline.length >= 3) {
+                    polygons.push(polyline);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get computed fill value including inherited values
+     * @private
+     * @param {Element} element - Element to check
+     * @returns {string|null} Fill value or null
+     */
+    static _getComputedFill(element) {
+        let current = element;
+        while (current && current.getAttribute) {
+            const fill = current.getAttribute('fill');
+            if (fill) return fill.toLowerCase();
+            current = current.parentElement;
+        }
+        return null;
+    }
+
+    /**
+     * Create rounded rectangle path
+     * @private
+     */
+    static _createRoundedRect(x, y, w, h, rx, ry, samplesPerUnit) {
+        const points = [];
+        const segments = Math.max(4, Math.ceil(Math.max(rx, ry) * samplesPerUnit * Math.PI / 2));
+        
+        // Top edge
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const px = x + rx + (w - 2 * rx) * t;
+            const py = y;
+            points.push([px, py]);
+        }
+        
+        // Top-right corner
+        for (let i = 0; i <= segments; i++) {
+            const angle = -Math.PI / 2 + (Math.PI / 2) * (i / segments);
+            const px = x + w - rx + rx * Math.cos(angle);
+            const py = y + ry + ry * Math.sin(angle);
+            points.push([px, py]);
+        }
+        
+        // Right edge
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const px = x + w;
+            const py = y + ry + (h - 2 * ry) * t;
+            points.push([px, py]);
+        }
+        
+        // Bottom-right corner
+        for (let i = 0; i <= segments; i++) {
+            const angle = 0 + (Math.PI / 2) * (i / segments);
+            const px = x + w - rx + rx * Math.cos(angle);
+            const py = y + h - ry + ry * Math.sin(angle);
+            points.push([px, py]);
+        }
+        
+        // Bottom edge
+        for (let i = 0; i <= segments; i++) {
+            const t = 1 - i / segments;
+            const px = x + rx + (w - 2 * rx) * t;
+            const py = y + h;
+            points.push([px, py]);
+        }
+        
+        // Bottom-left corner
+        for (let i = 0; i <= segments; i++) {
+            const angle = Math.PI / 2 + (Math.PI / 2) * (i / segments);
+            const px = x + rx + rx * Math.cos(angle);
+            const py = y + h - ry + ry * Math.sin(angle);
+            points.push([px, py]);
+        }
+        
+        // Left edge
+        for (let i = 0; i <= segments; i++) {
+            const t = 1 - i / segments;
+            const px = x;
+            const py = y + ry + (h - 2 * ry) * t;
+            points.push([px, py]);
+        }
+        
+        // Top-left corner
+        for (let i = 0; i <= segments; i++) {
+            const angle = Math.PI + (Math.PI / 2) * (i / segments);
+            const px = x + rx + rx * Math.cos(angle);
+            const py = y + ry + ry * Math.sin(angle);
+            points.push([px, py]);
+        }
+        
+        // Close the path
+        points.push(points[0]);
+        
+        return points;
+    }
+
+    // ========================================
     // ========================================
     // SVG BOUNDS & DIMENSIONS
     // ========================================
@@ -303,12 +542,14 @@ class SVGProcessor {
         const viewBox = svg.getAttribute('viewBox');
         if (viewBox) {
             try {
-                const parts = viewBox.split(/[\s,]+/).map(parseFloat);
-                if (parts.length >= 4) {
+                const parts = viewBox.trim().split(/[\s,]+/)
+                    .map(s => parseFloat(s))
+                    .filter(n => !isNaN(n) && isFinite(n));
+                if (parts.length >= 4 && parts[2] > 0 && parts[3] > 0) {
                     return [parts[0], parts[1], parts[2], parts[3]];
                 }
             } catch (e) {
-                console.warn('Failed to parse viewBox:', viewBox);
+                console.warn('Failed to parse viewBox:', viewBox, e);
             }
         }
 
@@ -317,15 +558,17 @@ class SVGProcessor {
         try {
             const width = svg.getAttribute('width');
             const height = svg.getAttribute('height');
-            const widthParsed = SVGProcessor._parseLength(width);
-            const heightParsed = SVGProcessor._parseLength(height);
-            vw = widthParsed.value;
-            vh = heightParsed.value;
+            if (width && height) {
+                const widthParsed = SVGProcessor._parseLength(width);
+                const heightParsed = SVGProcessor._parseLength(height);
+                vw = widthParsed.value;
+                vh = heightParsed.value;
+            }
         } catch (e) {
-            console.warn('Failed to parse width/height');
+            console.warn('Failed to parse width/height:', e);
         }
 
-        if (vw > 0 && vh > 0) {
+        if (vw > 0 && vh > 0 && isFinite(vw) && isFinite(vh)) {
             return [0, 0, vw, vh];
         }
 
@@ -336,23 +579,37 @@ class SVGProcessor {
             let minY = Infinity, maxY = -Infinity;
             
             for (const element of elements) {
-                const bbox = element.getBBox ? element.getBBox() : null;
-                if (bbox) {
-                    minX = Math.min(minX, bbox.x);
-                    maxX = Math.max(maxX, bbox.x + bbox.width);
-                    minY = Math.min(minY, bbox.y);
-                    maxY = Math.max(maxY, bbox.y + bbox.height);
+                try {
+                    // Try getBBox first
+                    if (element.getBBox) {
+                        const bbox = element.getBBox();
+                        if (bbox && isFinite(bbox.x) && isFinite(bbox.y) && 
+                            isFinite(bbox.width) && isFinite(bbox.height)) {
+                            minX = Math.min(minX, bbox.x);
+                            maxX = Math.max(maxX, bbox.x + bbox.width);
+                            minY = Math.min(minY, bbox.y);
+                            maxY = Math.max(maxY, bbox.y + bbox.height);
+                        }
+                    }
+                } catch (bboxError) {
+                    // getBBox can fail for some elements, just skip them
+                    continue;
                 }
             }
             
-            if (minX !== Infinity) {
-                return [minX, minY, maxX - minX, maxY - minY];
+            if (isFinite(minX) && isFinite(maxX) && isFinite(minY) && isFinite(maxY)) {
+                const width = maxX - minX;
+                const height = maxY - minY;
+                if (width > 0 && height > 0) {
+                    return [minX, minY, width, height];
+                }
             }
         } catch (e) {
-            console.warn('Failed to compute bounds from elements');
+            console.warn('Failed to compute bounds from elements:', e);
         }
 
         // Default fallback
+        console.warn('Using default viewBox [0, 0, 100, 100] - SVG has no valid dimensions');
         return [0, 0, 100, 100];
     }
 
@@ -364,18 +621,29 @@ class SVGProcessor {
      */
     static _parseLength(value) {
         try {
-            if (!value) return { value: 0, unit: 'px' };
-            const str = String(value).trim();
+            if (!value || value === '') return { value: 0, unit: 'px' };
             
-            // Extract number (supports exponential notation)
+            // If already a number, return it
+            if (typeof value === 'number') {
+                if (!isFinite(value)) return { value: 0, unit: 'px' };
+                return { value: value, unit: 'px' };
+            }
+            
+            const str = String(value).trim();
+            if (str === '') return { value: 0, unit: 'px' };
+            
+            // Extract number (supports exponential notation and negative numbers)
             const numberMatch = str.match(/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?/);
             if (!numberMatch) return { value: 0, unit: 'px' };
             
             const num = parseFloat(numberMatch[0]);
+            if (!isFinite(num)) return { value: 0, unit: 'px' };
+            
             const unit = str.substring(numberMatch[0].length).trim() || 'px';
             
             return { value: num, unit };
-        } catch {
+        } catch (e) {
+            console.warn('Failed to parse length:', value, e);
             return { value: 0, unit: 'px' };
         }
     }
@@ -459,53 +727,64 @@ class SVGProcessor {
      * @returns {Polyline[]} Array of sampled polylines
      */
     static _samplePath(d, samplesPerUnit = 2.0) {
-        if (!d) return [];
+        if (!d || typeof d !== 'string' || d.trim() === '') return [];
         
-        // Tokenize path data
-        const tokens = SVGProcessor._tokenizePath(d);
-        
-        // Initialize state
-        const state = {
-            currentX: 0,
-            currentY: 0,
-            startX: 0,
-            startY: 0,
-            lastControlX: undefined,
-            lastControlY: undefined,
-            lastQuadraticControlX: undefined,
-            lastQuadraticControlY: undefined,
-            currentPolyline: [],
-            allPolylines: []
-        };
-        
-        // Process tokens
-        let currentCommand = null;
-        let currentArgs = [];
+        try {
+            // Tokenize path data
+            const tokens = SVGProcessor._tokenizePath(d);
+            if (!tokens || tokens.length === 0) return [];
+            
+            // Initialize state
+            const state = {
+                currentX: 0,
+                currentY: 0,
+                startX: 0,
+                startY: 0,
+                lastControlX: undefined,
+                lastControlY: undefined,
+                lastQuadraticControlX: undefined,
+                lastQuadraticControlY: undefined,
+                currentPolyline: [],
+                allPolylines: []
+            };
+            
+            // Process tokens
+            let currentCommand = null;
+            let currentArgs = [];
 
-        for (const token of tokens) {
-            if (token.type === 'cmd') {
-                if (currentCommand) {
-                    SVGProcessor._processPathCommand(currentCommand, currentArgs, state, samplesPerUnit);
+            for (const token of tokens) {
+                if (token.type === 'cmd') {
+                    if (currentCommand) {
+                        SVGProcessor._processPathCommand(currentCommand, currentArgs, state, samplesPerUnit);
+                    }
+                    currentCommand = token.value;
+                    currentArgs = [];
+                } else {
+                    // Validate numeric token
+                    if (typeof token.value === 'number' && isFinite(token.value)) {
+                        currentArgs.push(token.value);
+                    } else {
+                        console.warn('Invalid path coordinate:', token.value);
+                    }
                 }
-                currentCommand = token.value;
-                currentArgs = [];
-            } else {
-                currentArgs.push(token.value);
             }
-        }
 
-        // Process final command
-        if (currentCommand) {
-            SVGProcessor._processPathCommand(currentCommand, currentArgs, state, samplesPerUnit);
-        }
-        
-        // Save final polyline
-        if (state.currentPolyline.length > 1) {
-            state.allPolylines.push(state.currentPolyline);
-        }
+            // Process final command
+            if (currentCommand) {
+                SVGProcessor._processPathCommand(currentCommand, currentArgs, state, samplesPerUnit);
+            }
+            
+            // Save final polyline
+            if (state.currentPolyline.length > 1) {
+                state.allPolylines.push(state.currentPolyline);
+            }
 
-        // Remove self-overlapping segments (common in stroke-to-path SVGs)
-        return SVGProcessor._removeSelfOverlaps(state.allPolylines);
+            // Remove self-overlapping segments (common in stroke-to-path SVGs)
+            return SVGProcessor._removeSelfOverlaps(state.allPolylines);
+        } catch (error) {
+            console.error('Error sampling path:', error, 'Path data:', d.substring(0, 100));
+            return [];
+        }
     }
     
     /**
@@ -1518,6 +1797,10 @@ class SVGProcessor {
      * @returns {Object} Transform matrix {a, b, c, d, e, f}
      */
     static _getTransformMatrix(element) {
+        if (!element) {
+            return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+        }
+        
         let current = element;
         let matrix = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 
@@ -1531,68 +1814,102 @@ class SVGProcessor {
         });
 
         const parseTransform = (transformStr) => {
-            if (!transformStr) return null;
-            const commands = transformStr.match(/[a-zA-Z]+\([^\)]+\)/g);
-            if (!commands) return null;
+            if (!transformStr || transformStr.trim() === '') return null;
             
-            let m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-            
-            for (const cmd of commands) {
-                const [type, argsStr] = [cmd.split('(')[0].trim(), cmd.split('(')[1].replace(')', '')];
-                const args = argsStr.split(/[,\s]+/).map(parseFloat).filter(n => !isNaN(n));
-                let t = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+            try {
+                const commands = transformStr.match(/[a-zA-Z]+\([^\)]+\)/g);
+                if (!commands) return null;
                 
-                switch (type) {
-                    case 'translate': {
-                        const tx = args[0] || 0;
-                        const ty = args[1] || 0;
-                        t = { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty };
-                        break;
-                    }
-                    case 'scale': {
-                        const sx = args[0] !== undefined ? args[0] : 1;
-                        const sy = args[1] !== undefined ? args[1] : sx;
-                        t = { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
-                        break;
-                    }
-                    case 'rotate': {
-                        const angle = ((args[0] || 0) * Math.PI) / 180;
-                        const cos = Math.cos(angle);
-                        const sin = Math.sin(angle);
-                        if (args.length >= 3) {
-                            const cx = args[1];
-                            const cy = args[2];
-                            t = multiply(
-                                multiply({ a: 1, b: 0, c: 0, d: 1, e: cx, f: cy }, 
-                                    { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 }),
-                                { a: 1, b: 0, c: 0, d: 1, e: -cx, f: -cy }
-                            );
-                        } else {
-                            t = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+                let m = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+                
+                for (const cmd of commands) {
+                    try {
+                        const openParen = cmd.indexOf('(');
+                        if (openParen === -1) continue;
+                        
+                        const type = cmd.substring(0, openParen).trim();
+                        const argsStr = cmd.substring(openParen + 1, cmd.lastIndexOf(')'));
+                        const args = argsStr.split(/[,\s]+/)
+                            .map(s => parseFloat(s))
+                            .filter(n => !isNaN(n) && isFinite(n));
+                        
+                        let t = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+                        
+                        switch (type.toLowerCase()) {
+                            case 'translate': {
+                                const tx = args[0] || 0;
+                                const ty = args[1] || 0;
+                                t = { a: 1, b: 0, c: 0, d: 1, e: tx, f: ty };
+                                break;
+                            }
+                            case 'scale': {
+                                const sx = args[0] !== undefined ? args[0] : 1;
+                                const sy = args[1] !== undefined ? args[1] : sx;
+                                t = { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
+                                break;
+                            }
+                            case 'rotate': {
+                                const angle = ((args[0] || 0) * Math.PI) / 180;
+                                const cos = Math.cos(angle);
+                                const sin = Math.sin(angle);
+                                if (args.length >= 3) {
+                                    const cx = args[1];
+                                    const cy = args[2];
+                                    t = multiply(
+                                        multiply({ a: 1, b: 0, c: 0, d: 1, e: cx, f: cy }, 
+                                            { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 }),
+                                        { a: 1, b: 0, c: 0, d: 1, e: -cx, f: -cy }
+                                    );
+                                } else {
+                                    t = { a: cos, b: sin, c: -sin, d: cos, e: 0, f: 0 };
+                                }
+                                break;
+                            }
+                            case 'skewx': {
+                                const angle = ((args[0] || 0) * Math.PI) / 180;
+                                const tan = Math.tan(angle);
+                                t = { a: 1, b: 0, c: tan, d: 1, e: 0, f: 0 };
+                                break;
+                            }
+                            case 'skewy': {
+                                const angle = ((args[0] || 0) * Math.PI) / 180;
+                                const tan = Math.tan(angle);
+                                t = { a: 1, b: tan, c: 0, d: 1, e: 0, f: 0 };
+                                break;
+                            }
+                            case 'matrix': {
+                                if (args.length === 6) {
+                                    t = { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] };
+                                }
+                                break;
+                            }
                         }
-                        break;
-                    }
-                    case 'matrix': {
-                        if (args.length === 6) {
-                            t = { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] };
-                        }
-                        break;
+                        
+                        m = multiply(m, t);
+                    } catch (cmdError) {
+                        console.warn('Failed to parse transform command:', cmd, cmdError);
                     }
                 }
                 
-                m = multiply(m, t);
+                return m;
+            } catch (error) {
+                console.warn('Failed to parse transform:', transformStr, error);
+                return null;
             }
-            
-            return m;
         };
 
         while (current && current.getAttribute) {
-            const tStr = current.getAttribute('transform');
-            const tMatrix = parseTransform(tStr);
-            if (tMatrix) {
-                matrix = multiply(tMatrix, matrix);
+            try {
+                const tStr = current.getAttribute('transform');
+                const tMatrix = parseTransform(tStr);
+                if (tMatrix) {
+                    matrix = multiply(tMatrix, matrix);
+                }
+                current = current.parentElement;
+            } catch (error) {
+                console.warn('Error processing transform for element:', current.tagName, error);
+                break;
             }
-            current = current.parentElement;
         }
         
         return matrix;
@@ -1606,10 +1923,25 @@ class SVGProcessor {
      * @returns {Polyline} Transformed polyline
      */
     static _applyTransform(polyline, matrix) {
-        return polyline.map(([x, y]) => [
-            matrix.a * x + matrix.c * y + matrix.e,
-            matrix.b * x + matrix.d * y + matrix.f
-        ]);
+        if (!polyline || !Array.isArray(polyline)) return [];
+        if (!matrix) return polyline;
+        
+        return polyline.map(([x, y]) => {
+            if (!isFinite(x) || !isFinite(y)) {
+                console.warn('Invalid coordinates in polyline:', x, y);
+                return [0, 0];
+            }
+            
+            const newX = matrix.a * x + matrix.c * y + matrix.e;
+            const newY = matrix.b * x + matrix.d * y + matrix.f;
+            
+            if (!isFinite(newX) || !isFinite(newY)) {
+                console.warn('Transform resulted in invalid coordinates:', newX, newY);
+                return [x, y]; // Return original if transform fails
+            }
+            
+            return [newX, newY];
+        }).filter(([x, y]) => isFinite(x) && isFinite(y));
     }
 }
 

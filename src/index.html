@@ -7,6 +7,7 @@
     <link rel="icon" type="image/svg+xml" href="favicon.png">
     <link rel="stylesheet" href="css/styles.css">
     <link rel="stylesheet" href="css/import-dialog.css">
+    <link rel="stylesheet" href="css/image-import-dialog.css">
 </head>
 <body>
     <div class="container">
@@ -18,8 +19,8 @@
                 <!-- SVG List -->
                 <section class="panel">
                     <h2>SVG Files</h2>
-                    <button id="btn-import" class="btn--primary">Import SVG</button>
-                    <input type="file" id="file-input" accept=".svg" class="visually-hidden">
+                    <button id="btn-import" class="btn--primary">Import SVG/Image</button>
+                    <input type="file" id="file-input" accept=".svg,.png,.jpg,.jpeg,.gif" class="visually-hidden">
                     <ul id="svg-list" class="svg-list"></ul>
                 </section>
 
@@ -41,6 +42,10 @@
                     <div class="form__group">
                         <label for="rotation">Rotation (°)</label>
                         <input type="number" id="rotation" step="1" value="0">
+                    </div>
+                    <div class="form__group">
+                        <label>Size (mm)</label>
+                        <div id="svg-size" class="size-display">-</div>
                     </div>
                 </section>
 
@@ -95,9 +100,25 @@
                     <ul id="preset-list" class="preset-list"></ul>
                 </section>
 
+                <!-- Project Management -->
+                <section class="panel">
+                    <h2>Project</h2>
+                    <button id="btn-save-project" class="btn--primary">💾 Save Project</button>
+                    <button id="btn-load-project" class="btn--secondary">📁 Load Project</button>
+                    <button id="btn-export-project" class="btn--secondary">↓ Export JSON</button>
+                    <button id="btn-import-project" class="btn--secondary">↑ Import JSON</button>
+                    <input type="file" id="project-file-input" accept=".json,.plotlab.json" style="display: none;">
+                </section>
+
                 <!-- G-Code Export -->
                 <section class="panel">
                     <h2>G-Code</h2>
+                    <div class="form__group">
+                        <label>
+                            <input type="checkbox" id="optimize-paths" checked>
+                            Optimize path order (reduce travel distance)
+                        </label>
+                    </div>
                     <div class="form__group">
                         <label for="feed-rate">Draw Feed Rate (mm/min)</label>
                         <input type="number" id="feed-rate" value="3000" min="1" step="100">
@@ -159,9 +180,21 @@ G0 X0 Y{bedHeight} Z100
             <div class="toolbar">
                 <h2>3D Preview</h2>
                 <div class="toolbar__controls">
-                    <button id="btn-reset-camera">Reset Camera</button>
-                    <button id="btn-toggle-grid">Toggle Grid</button>
+                    <button id="btn-theme-toggle" class="toolbar__btn" title="Toggle Theme">🌙 Dark</button>
+                    <button id="btn-undo" class="toolbar__btn" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+                    <button id="btn-redo" class="toolbar__btn" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>
+                    <button id="btn-reset-camera" class="toolbar__btn">Reset Camera</button>
+                    <button id="btn-toggle-grid" class="toolbar__btn">Toggle Grid</button>
                 </div>
+            </div>
+            <!-- Collision Warning Banner -->
+            <div id="collision-warning" class="collision-warning" style="display: none;">
+                <div class="collision-warning__icon">⚠️</div>
+                <div class="collision-warning__content">
+                    <strong>Collision Detected!</strong>
+                    <span id="collision-message"></span>
+                </div>
+                <button id="btn-dismiss-warning" class="collision-warning__dismiss">✕</button>
             </div>
             <div id="canvas-container">
                 <canvas id="preview-canvas"></canvas>
@@ -176,8 +209,12 @@ G0 X0 Y{bedHeight} Z100
                 <h2>G-Code Viewer</h2>
                 <button id="modal-close" aria-label="Close">&times;</button>
             </div>
+            <div id="validation-panel" class="validation-panel" style="display:none;">
+                <div class="validation-summary" id="validation-summary"></div>
+                <div class="validation-details" id="validation-details"></div>
+            </div>
             <div class="modal-body">
-                <textarea id="gcode-content" readonly></textarea>
+                <textarea id="gcode-content"></textarea>
             </div>
             <div class="modal-footer">
                 <button id="btn-copy-gcode" class="btn--secondary">Copy to Clipboard</button>
@@ -258,12 +295,57 @@ G0 X0 Y{bedHeight} Z100
         </div>
     </div>
 
+    <!-- Project Save Modal -->
+    <div id="project-save-modal" class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>💾 Save Project</h2>
+                <button id="project-save-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form__group">
+                    <label for="project-name">Project Name</label>
+                    <input type="text" id="project-name" placeholder="My PlotLab Project">
+                </div>
+                <p style="font-size: 0.9em; color: var(--color-text-secondary); margin-top: 10px;">
+                    Saves all SVGs, settings, exclusion zones, and transformations.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button id="project-save-modal-cancel" class="btn--secondary">Cancel</button>
+                <button id="project-save-modal-save" class="btn--primary">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project Load Modal -->
+    <div id="project-load-modal" class="modal" role="dialog" aria-modal="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📁 Load Project</h2>
+                <button id="project-load-modal-close" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <ul id="project-load-list" class="project-list"></ul>
+                <p id="project-no-saved" style="font-size: 0.9em; color: var(--color-text-secondary); text-align: center; padding: 20px; display: none;">
+                    No saved projects. Save your current work to see it here.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button id="project-load-modal-close-btn" class="btn--secondary">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script type="importmap">
     {
         "imports": {
             "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-            "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js"
+            "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js",
+            "three/examples/jsm/lines/Line2.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/Line2.js",
+            "three/examples/jsm/lines/LineMaterial.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineMaterial.js",
+            "three/examples/jsm/lines/LineGeometry.js": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/lines/LineGeometry.js"
         }
     }
     </script>

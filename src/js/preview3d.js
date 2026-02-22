@@ -1,9 +1,12 @@
 // 3D Preview using Three.js
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 
 // Constants
-const CAMERA_POSITION = { x: 200, y: 250, z: 200 };
+const CAMERA_POSITION = { x: -250, y: 300, z: 0 };
 const CAMERA_FOV = 50;
 const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 2000;
@@ -25,9 +28,9 @@ const AXIS_COLOR_Y = 0x22c55e;
 const AXIS_COLOR_Z = 0x3b82f6;
 
 const BED_HEIGHT = 0.61;
-const BED_OPACITY = 0.9;
-const BED_ROUGHNESS = 0.3;
-const BED_METALNESS = 0.1;
+const BED_OPACITY = 0.35;
+const BED_ROUGHNESS = 1;
+const BED_METALNESS = 1;
 const BED_BORDER_COLOR = 0x2563eb;
 const BED_BORDER_HEIGHT = 0.8;
 
@@ -38,11 +41,14 @@ const EXCLUSION_ZONE_BORDER_HEIGHT = 1.25;
 const EXCLUSION_ZONE_OPACITY = 0.3;
 const EXCLUSION_ZONE_COLOR = 0xff0000;
 
-const SVG_DEFAULT_COLOR = 0x3b82f6;
-const SVG_SELECTED_COLOR = 0xfbbf24;
-const SVG_LINE_WIDTH = 2;
+const SVG_DEFAULT_COLOR = 0x22c55e;
+const SVG_SELECTED_COLOR = 0x3b82f6;
+const SVG_LINE_WIDTH = 2; // Width in pixels
 const SVG_SELECTION_OUTLINE_COLOR = 0xf59e0b;
+const SVG_SELECTION_OUTLINE_WIDTH = 2; // Width in pixels
 const SVG_SELECTION_OUTLINE_HEIGHT = 1.6;
+const SVG_SELECTION_DASH_SIZE = 8;
+const SVG_SELECTION_GAP_SIZE = 4;
 
 const SCENE_BACKGROUND_COLOR = 0xf5f5f5;
 const AMBIENT_LIGHT_INTENSITY = 0.6;
@@ -257,9 +263,8 @@ export class Preview3D {
      */
     _initControls() {
         this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-        this.controls.enableDamping = true;
+        this.controls.enableDamping = false;
         this.controls.dampingFactor = ORBIT_DAMPING_FACTOR;
-        this.controls.screenSpacePanning = false;
         this.controls.minDistance = CAMERA_MIN_DISTANCE;
         this.controls.maxDistance = CAMERA_MAX_DISTANCE;
         this.controls.maxPolarAngle = CAMERA_MAX_POLAR_ANGLE;
@@ -286,6 +291,23 @@ export class Preview3D {
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(width, height);
+        
+        // Update resolution for all Line2 materials
+        const resolution = new THREE.Vector2(width, height);
+        
+        // Update SVG line materials
+        this.svgMeshes.forEach(group => {
+            group.traverse(obj => {
+                if (obj.material && obj.material.resolution) {
+                    obj.material.resolution.set(width, height);
+                }
+            });
+        });
+        
+        // Update selection outline material
+        if (this.selectionOutline && this.selectionOutline.material && this.selectionOutline.material.resolution) {
+            this.selectionOutline.material.resolution.set(width, height);
+        }
     }
 
     /**
@@ -330,12 +352,25 @@ export class Preview3D {
                 return new THREE.Vector3(coords.x, POLYLINE_HEIGHT, coords.y);
             });
             
-            const geometry = new THREE.BufferGeometry().setFromPoints(points);
-            const material = new THREE.LineBasicMaterial({ 
-                color: color,
-                linewidth: SVG_LINE_WIDTH
+            // Create positions array for LineGeometry (x,y,z,x,y,z,...)
+            const positions = [];
+            points.forEach(p => {
+                positions.push(p.x, p.y, p.z);
             });
-            const line = new THREE.Line(geometry, material);
+            
+            const geometry = new LineGeometry();
+            geometry.setPositions(positions);
+            
+            const material = new LineMaterial({ 
+                color: color,
+                linewidth: SVG_LINE_WIDTH, // LineWidth is in pixels
+                transparent: false,
+                opacity: 1.0,
+                resolution: new THREE.Vector2(this.container.clientWidth, this.container.clientHeight),
+                dashed: false
+            });
+            
+            const line = new Line2(geometry, material);
             group.add(line);
         });
         
@@ -439,13 +474,32 @@ export class Preview3D {
             const coords = this._transformToThreeCoords(x, y);
             return new THREE.Vector3(coords.x, SVG_SELECTION_OUTLINE_HEIGHT, coords.y);
         });
+        // Add first point again to close the loop
+        points.push(points[0].clone());
 
-        const geometry = new THREE.BufferGeometry().setFromPoints(points);
-        const material = new THREE.LineBasicMaterial({
-            color: SVG_SELECTION_OUTLINE_COLOR,
-            linewidth: SVG_LINE_WIDTH
+        // Create positions array for LineGeometry
+        const positions = [];
+        points.forEach(p => {
+            positions.push(p.x, p.y, p.z);
         });
-        const line = new THREE.LineLoop(geometry, material);
+
+        const geometry = new LineGeometry();
+        geometry.setPositions(positions);
+        
+        const material = new LineMaterial({
+            color: SVG_SELECTION_OUTLINE_COLOR,
+            linewidth: SVG_SELECTION_OUTLINE_WIDTH, // LineWidth is in pixels
+            dashed: true,
+            dashScale: 1,
+            dashSize: SVG_SELECTION_DASH_SIZE,
+            gapSize: SVG_SELECTION_GAP_SIZE,
+            transparent: false,
+            opacity: 1.0,
+            resolution: new THREE.Vector2(this.container.clientWidth, this.container.clientHeight)
+        });
+        
+        const line = new Line2(geometry, material);
+        line.computeLineDistances(); // Required for dashed lines
 
         this.selectionOutline = line;
         this.scene.add(line);
@@ -589,5 +643,116 @@ export class Preview3D {
             this.scene.add(border);
             this.exclusionZoneMeshes.push(border);
         });
+    }
+
+    // ========================================
+    // COLLISION DETECTION
+    // ========================================
+
+    /**
+     * Check for collisions and highlight problem areas
+     * @param {Array<Array<[number, number]>>} polylines - Polylines to check
+     * @param {Object} settings - Settings object with bed dimensions
+     * @param {Array<Object>} exclusionZones - Exclusion zones
+     * @returns {Object} Collision data { hasCollisions, outOfBounds, zoneCollisions, total }
+     */
+    checkCollisions(polylines, settings, exclusionZones = []) {
+        // Clear previous collision markers
+        this._clearCollisionMarkers();
+
+        const bedWidth = parseFloat(settings.bedWidth) || 256;
+        const bedHeight = parseFloat(settings.bedHeight) || 256;
+        const offsetX = parseFloat(settings.penOffsetX) || 0;
+        const offsetY = parseFloat(settings.penOffsetY) || 0;
+
+        const outOfBoundsPoints = [];
+        const zoneCollisionPoints = [];
+
+        // Check each point
+        polylines.forEach((polyline, polyIdx) => {
+            polyline.forEach((point, pointIdx) => {
+                const x = point[0] + offsetX;
+                const y = point[1] + offsetY;
+
+                // Check bounds
+                if (x < 0 || y < 0 || x > bedWidth || y > bedHeight) {
+                    outOfBoundsPoints.push({ x, y, polyIdx, pointIdx });
+                }
+
+                // Check exclusion zones
+                exclusionZones.forEach(zone => {
+                    if (this._isPointInZone(x, y, zone)) {
+                        zoneCollisionPoints.push({ x, y, polyIdx, pointIdx });
+                    }
+                });
+            });
+        });
+
+        // Visualize collisions
+        outOfBoundsPoints.forEach(p => {
+            this._addCollisionMarker(p.x, p.y, 0xff0000); // Red for out of bounds
+        });
+
+        zoneCollisionPoints.forEach(p => {
+            this._addCollisionMarker(p.x, p.y, 0xff8800); // Orange for zone collisions
+        });
+
+        const hasCollisions = outOfBoundsPoints.length > 0 || zoneCollisionPoints.length > 0;
+
+        return {
+            hasCollisions,
+            outOfBounds: outOfBoundsPoints.length,
+            zoneCollisions: zoneCollisionPoints.length,
+            total: outOfBoundsPoints.length + zoneCollisionPoints.length
+        };
+    }
+
+    /**
+     * Check if point is inside exclusion zone
+     * @private
+     */
+    _isPointInZone(x, y, zone) {
+        return x >= zone.x && 
+               x <= (zone.x + zone.width) && 
+               y >= zone.y && 
+               y <= (zone.y + zone.height);
+    }
+
+    /**
+     * Add visual marker for collision point
+     * @private
+     */
+    _addCollisionMarker(x, y, color) {
+        if (!this.collisionMarkers) {
+            this.collisionMarkers = [];
+        }
+
+        const coords = this._transformToThreeCoords(x, y);
+        const geometry = new THREE.SphereGeometry(1.5, 16, 16);
+        const material = new THREE.MeshBasicMaterial({ 
+            color,
+            transparent: true,
+            opacity: 0.8
+        });
+        const marker = new THREE.Mesh(geometry, material);
+        marker.position.set(coords.x, 5, coords.y); // Elevated for visibility
+        
+        this.scene.add(marker);
+        this.collisionMarkers.push(marker);
+    }
+
+    /**
+     * Clear all collision markers
+     * @private
+     */
+    _clearCollisionMarkers() {
+        if (this.collisionMarkers) {
+            this.collisionMarkers.forEach(marker => {
+                this.scene.remove(marker);
+                marker.geometry.dispose();
+                marker.material.dispose();
+            });
+            this.collisionMarkers = [];
+        }
     }
 }

@@ -83,6 +83,9 @@ export class GCodeGenerator {
         gcode.push('');
 
         // Process each polyline
+        const totalPolylines = polylines.filter(pl => pl && pl.length >= 2).length;
+        let completedPolylines = 0;
+        
         polylines.forEach((polyline, idx) => {
             if (!polyline || polyline.length < 2) return;
             
@@ -103,6 +106,12 @@ export class GCodeGenerator {
             
             // Raise pen
             gcode.push(`G0 Z${nozzleUpZ.toFixed(3)} F${safeTravelFeedRate} ; Pen up (offset adjusted)`);
+            
+            // Add progress update (M73)
+            completedPolylines++;
+            const progress = Math.round((completedPolylines / totalPolylines) * 100);
+            gcode.push(`M73 P${progress} R0 ; Progress: ${progress}%`);
+            
             gcode.push('');
         });
         

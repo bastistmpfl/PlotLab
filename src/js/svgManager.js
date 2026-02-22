@@ -1,7 +1,7 @@
 // Constants
 const BED_CENTER_FACTOR = 0.5;
 const DEFAULT_SCALE = 1.0;
-const DEFAULT_ROTATION = 0.0;
+const DEFAULT_ROTATION = 90.0;
 const DEFAULT_BED_SIZE = 256;
 
 /**
@@ -43,17 +43,14 @@ export class SVGManager {
     addSVG(filename, polylines, originalBounds, initialScale = DEFAULT_SCALE, metadata = {}) {
         const id = `svg_${this.nextId++}`;
         
-        // Calculate initial translation to center SVG on bed
-        // SVG bounds are in original SVG coordinate space
+        // Calculate SVG center for rotation pivot
         const svgCenterX = (originalBounds.minX + originalBounds.maxX) / 2;
         const svgCenterY = (originalBounds.minY + originalBounds.maxY) / 2;
-        const mmScale = metadata?.scaleFactor?.avgScale || DEFAULT_SCALE;
-        const svgCenterXMM = svgCenterX * mmScale;
-        const svgCenterYMM = svgCenterY * mmScale;
         
-        // We want to position the SVG center at bed center (bedWidth/2, bedHeight/2)
-        const initialX = this.bedWidth * BED_CENTER_FACTOR - svgCenterXMM * initialScale;
-        const initialY = this.bedHeight * BED_CENTER_FACTOR - svgCenterYMM * initialScale;
+        // Translation represents where the SVG center should be positioned on the bed
+        // Default: center of bed (128, 128)
+        const initialX = this.bedWidth * BED_CENTER_FACTOR;
+        const initialY = this.bedHeight * BED_CENTER_FACTOR;
         
         const svgObject = {
             id,
@@ -193,16 +190,38 @@ export class SVGManager {
         // Calculate bounds of rotated polylines
         let minX = Infinity;
         let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
         for (const polyline of transformed) {
             for (const [x, y] of polyline) {
                 minX = Math.min(minX, x);
                 minY = Math.min(minY, y);
+                maxX = Math.max(maxX, x);
+                maxY = Math.max(maxY, y);
             }
         }
 
-        // Adjust so translation represents top-left corner position
+        // Calculate center of rotated bounds
+        const rotatedCenterX = (minX + maxX) / 2;
+        const rotatedCenterY = (minY + maxY) / 2;
+
+        // Adjust so translation represents the center position
+        // Shift the rotated SVG so its center is at (tx, ty)
         return transformed.map(polyline => 
-            polyline.map(([x, y]) => [x - minX + tx, y - minY + ty])
+            polyline.map(([x, y]) => [x - rotatedCenterX + tx, y - rotatedCenterY + ty])
         );
+    }
+
+    /**
+     * Get SVG objects with their polylines for G-Code generation
+     * @returns {Array} Array of objects with id, polylines, visible
+     */
+    getAllSVGsWithPolylines() {
+        return Array.from(this.svgObjects.values()).map(svg => ({
+            id: svg.id,
+            filename: svg.filename,
+            polylines: this.getTransformedPolylines(svg),
+            visible: svg.visible
+        }));
     }
 }
